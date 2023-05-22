@@ -1,0 +1,26 @@
+#define MQTT_SERVER      		"192.168.0.xxx" 		//IP address of MQTT server
+#define MQTT_SERVERPORT  		1883 					//MQTT server port
+#define MQTT_USERNAME    		"" 						//MQTT server username
+#define MQTT_KEY         		""						//MQTT server password
+
+#define DATA_INPUT_PIN		  	A0 						//Pin to read analog data
+#define MQTT_CHANNEL_DATA     	""						//MQTT channel to pulish data
+
+#define AIR_VALUE             	870  					//output of the sensor in air
+#define WATER_VALUE           	365  					//output of the sensor in water
+
+#define VOLTAGE_INPUT_PIN     	A1 						//Pin to read analog battery voltage (0-5V)
+#define MQTT_CHANNEL_VOLTAGE  	""						//MQTT channel to pulish voltage
+#define VOLTAGE_SLOPE         	0.006941544472 			//Slope of the reading-to-voltage function (0.006941544472 works for a 280k resistor)
+#define VOLTAGE_INTERCEPT     	-0.9617940923 			//Intercept of the reading-to-voltage function (-0.9617940923 works for a 280k resistor)
+
+#define SLEEP_TIME        		300						//Time between readings (seconds)
+
+#define WIFI_SSID        		""						//Your wifi SSID
+#define WIFI_PASSWD      		""						//Your wifi password
+
+#define OTA_PORT          		8266
+#define OTA_HOSTNAME      		""						//OTA hostname
+#define OTA_PASSWD        		""						//OTA password
+
+#define SLEEP_DONT_LOOP     	false					//true: goes to sleep and wakes up after the delay; false: keeps looping and just delay() between reads
