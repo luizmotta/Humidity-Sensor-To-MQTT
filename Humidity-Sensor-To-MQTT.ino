@@ -1,19 +1,17 @@
-#include <ESP8266WiFi.h>
-#include <ESP8266mDNS.h>
+#include "config.h"
+
+#ifdef IS_ESP32
+  #include <WiFi.h>
+#else
+  #include <ESP8266WiFi.h>
+#endif
+
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
-
+#include "time.h"
 #include "Adafruit_MQTT.h"
 #include "Adafruit_MQTT_Client.h"
 
-#include "config.h"
-
-#ifdef DATA_INPUT_PIN
-  int inputPin = DATA_INPUT_PIN;  // choose the input pin (for temperature probe)
-#endif
-#ifdef VOLTAGE_INPUT_PIN
-  int voltagePin = VOLTAGE_INPUT_PIN;  // choose the input pin (for battery voltage)
-#endif
 
 unsigned long lastSent; // last MQTT message published
 
@@ -22,15 +20,6 @@ WiFiClient client;
 
 // Setup the MQTT client class by passing in the WiFi client and MQTT server and login details.
 Adafruit_MQTT_Client mqtt(&client, MQTT_SERVER, MQTT_SERVERPORT, MQTT_USERNAME, MQTT_KEY);
-
-// Setup MQTT feeds for publishing.
-#ifdef VOLTAGE_INPUT_PIN
-  Adafruit_MQTT_Publish mqtt_client_voltage = Adafruit_MQTT_Publish(&mqtt, MQTT_CHANNEL_VOLTAGE);
-#endif
-
-#ifdef DATA_INPUT_PIN
-  Adafruit_MQTT_Publish mqtt_client_data = Adafruit_MQTT_Publish(&mqtt, MQTT_CHANNEL_DATA);
-#endif
 
 // Function to connect and reconnect as necessary to the MQTT server.
 // Should be called in the loop function and it will take care if connecting.
@@ -49,12 +38,12 @@ void MQTT_connect() {
     Serial.println(mqtt.connectErrorString(ret));
     mqtt.disconnect();
     Serial.println("Aborting...");
-    if( SLEEP_DONT_LOOP ) {
+    #ifdef SLEEP_DONT_LOOP
       ESP.deepSleep(SLEEP_TIME * 10e5);//10e5 = 1 second
-      delay(1000);
-    } else {
+      delay(100);
+    #else
       ESP.restart();
-    }
+    #endif
   }
   Serial.println("MQTT Connected!");
 }
@@ -64,18 +53,30 @@ void WiFi_connect() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWD);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
     Serial.println("Wifi connection failed! Aborting...");
-    if (SLEEP_DONT_LOOP) {
+    #ifdef SLEEP_DONT_LOOP
       ESP.deepSleep(SLEEP_TIME * 10e5);//10e5 = 1 second
-      delay(1000);
-    } else {
+      delay(100);
+    #else
       ESP.restart();
-    }
+    #endif
   }
 
   Serial.println("Ready");
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 }
+
+String getTimeStr(){
+  struct tm timeinfo;
+  char buffer[40];
+  if(!getLocalTime(&timeinfo)){
+    Serial.println("Failed to obtain time");
+  } else {
+    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
+  }
+  return String(buffer);
+}
+
 
 #ifdef OTA_PORT
 void setupOTA() {
@@ -119,46 +120,107 @@ void setupOTA() {
 }
 #endif
 
+/*************************************
+ * SETUP - run always if SLEEP_DONT_LOOP is true or just once otherwise
+ */
 void setup() {
+  #ifdef IS_ESP32
+    analogReadResolution(10);
+  #endif
   pinMode(LED_PIN, OUTPUT);      // declare LED as output
 
   #ifdef VOLTAGE_INPUT_PIN
-    pinMode(voltagePin, INPUT);   // declare battery voltage as input
+    pinMode(VOLTAGE_INPUT_PIN, INPUT);   // declare battery voltage as input
   #endif
-  #ifdef DATA_INPUT_PIN
-    pinMode(inputPin, INPUT);     // declare sensor as input
+  #ifdef DATA_INPUT_PIN_1
+    pinMode(DATA_INPUT_PIN_1, INPUT);     // declare sensor as input
+  #endif
+  #ifdef DATA_INPUT_PIN_2
+    pinMode(DATA_INPUT_PIN_2, INPUT);     // declare sensor as input
+  #endif
+  #ifdef DATA_INPUT_PIN_3
+    pinMode(DATA_INPUT_PIN_3, INPUT);     // declare sensor as input
   #endif
 
   Serial.begin(115200);
   Serial.println("Booting");
 
   WiFi_connect();
+  configTime(0, 0, "pool.ntp.org");
+
+  #ifdef SLEEP_DONT_LOOP
+    collectAndPublish();
+    delay(100); // gives time to complete whatever task is pending
+    
+    Serial.print(F("Going to sleep for "));
+    Serial.print(SLEEP_TIME);
+    Serial.println(F(" seconds..."));
+    
+    mqtt.disconnect();
+    WiFi.disconnect();
+    ESP.deepSleep(SLEEP_TIME * 10e5);//10e5 = 1 second
+    // goes to sleep and runs the setup() again on wakeup
+    delay(100);
+  #endif
 
   #ifdef OTA_PORT
     setupOTA();
   #endif
-
-  if( SLEEP_DONT_LOOP ) {
-    collectAndPublish();
-    delay(2000);
-    mqtt.disconnect();
-    delay(1000);
-    Serial.println(F("Going to sleep..."));
-    ESP.deepSleep(SLEEP_TIME * 10e5);//10e5 = 1 second
-    delay(1000);
-  }
+  // ... and continues to the loop()
 }
 
-void collectAndPublish() {
+void collectAndPublishHumidity(int pin, int air_value, int water_value, char* mqtt_channel) {
+  char buf[256];
+  String message;  
   int soilMoistureValue = 0;
-  int soilMoisturePercent=0;
-  MQTT_connect(); // just in case it disconnected
+  int soilMoisturePercent = 0;
+  int sumValues = 0;
+  Adafruit_MQTT_Publish mqtt_client_data = Adafruit_MQTT_Publish(&mqtt, mqtt_channel);
 
-  digitalWrite(LED_PIN, HIGH);
-  delay(500);
+  String strNow = getTimeStr();
+  Serial.print( "Now: " );
+  Serial.println( strNow );
+
+  for( int i=0; i<N_MEASUREMENTS; i++) {
+    sumValues = sumValues + analogRead(pin);
+    delay( MEASUREMENTS_DELAY );
+  }
+  soilMoistureValue = sumValues / N_MEASUREMENTS;
+    
+  soilMoisturePercent = map(soilMoistureValue, air_value, water_value, 0, 100);
+  if (soilMoisturePercent < 0) soilMoisturePercent=0;
+  if (soilMoisturePercent > 100) soilMoisturePercent=100;
+  Serial.print("Pin ");
+  Serial.print(pin);
+  Serial.print(" humidity read: ");
+  Serial.print(soilMoistureValue);
+  Serial.print(", ");
+  Serial.print(soilMoisturePercent);
+  Serial.println("%");
+  if( (soilMoistureValue >= MIN_VALID) && (soilMoistureValue <= MAX_VALID) ) {
+    message = "{\"humidity\": " + String(soilMoisturePercent) + ", \"measurement\": " + String(soilMoistureValue) +", \"time\": \"" + strNow + "\"}";
+  } else {
+    message = "{\"humidity\": null, \"measurement\": " + String(soilMoistureValue) +", \"time\": \"" + strNow + "\"}";
+  }
+  message.toCharArray(buf, 256);
+  if (!mqtt_client_data.publish(buf)) {
+    Serial.println(F("Failed publishing MQTT message"));
+  } else {
+    Serial.println(F("Success publishing MQTT message!"));
+  }
+  delay(100);
+  }
+
+void collectAndPublish() {
+  char buf[256];
+  String message;  
   digitalWrite(LED_PIN, LOW);
   
+  MQTT_connect(); // just in case it disconnected
+  
   #ifdef VOLTAGE_INPUT_PIN
+    Adafruit_MQTT_Publish mqtt_client_voltage = Adafruit_MQTT_Publish(&mqtt, MQTT_CHANNEL_VOLTAGE);
+
     //Read battery voltage
     float voltage = ( analogRead(VOLTAGE_INPUT_PIN) * (VOLTAGE_SLOPE) + (VOLTAGE_INTERCEPT) );
     Serial.print("Voltage read: ");
@@ -168,39 +230,42 @@ void collectAndPublish() {
     } else {
       Serial.println(F("Success publishing MQTT message!"));
     }
-    delay(500);
+    delay(100);
   #endif
   
-  #ifdef DATA_INPUT_PIN
-    soilMoistureValue = analogRead(A0);  
-    soilMoisturePercent = map(soilMoistureValue, AIR_VALUE, WATER_VALUE, 0, 100);
-    Serial.print("Humidity read: ");
-    Serial.print(soilMoistureValue);
-    Serial.print(", ");
-    Serial.print(soilMoisturePercent );
-    Serial.println("%");
-  
-    if (!mqtt_client_data.publish(soilMoisturePercent)) {
-      Serial.println(F("Failed publishing MQTT message"));
-    } else {
-      Serial.println(F("Success publishing MQTT message!"));
-    }
+  #ifdef DATA_INPUT_PIN_1
+    collectAndPublishHumidity( DATA_INPUT_PIN_1, AIR_VALUE_1, WATER_VALUE_1, MQTT_CHANNEL_DATA_1);
   #endif
+
+  #ifdef DATA_INPUT_PIN_2
+    collectAndPublishHumidity( DATA_INPUT_PIN_2, AIR_VALUE_2, WATER_VALUE_2, MQTT_CHANNEL_DATA_2);
+  #endif
+
+  #ifdef DATA_INPUT_PIN_1
+    collectAndPublishHumidity( DATA_INPUT_PIN_3, AIR_VALUE_3, WATER_VALUE_3, MQTT_CHANNEL_DATA_3);
+  #endif
+  
+  digitalWrite(LED_PIN, HIGH);
 }
 
+/*****************************
+ *  LOOP - only run when SLEEP_DONT_LOOP is false
+ */
 void loop() {
   unsigned long lastRun; // variable to store last run
 
   collectAndPublish();
   
-  lastRun = millis();
   #ifdef OTA_PORT
-    while( millis() < ( lastRun + SLEEP_TIME * 1000 ) ) {
+    lastRun = millis();
+    while( millis() < ( lastRun + SLEEP_TIME * 1000 ) ) { //waits in the OTA loop until it's time to continue
       ArduinoOTA.handle();
-      delay(100);
+      delay(10);
     }
   #else
-    delay(SLEEP_TIME * 1000);
+    delay( SLEEP_TIME * 1000 );
   #endif
-
+  Serial.print(F("Next measurement in "));
+  Serial.print(SLEEP_TIME);
+  Serial.println(F(" seconds"));
 }
